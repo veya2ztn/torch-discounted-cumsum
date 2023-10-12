@@ -1,2 +1,2 @@
-from torch_discounted_cumsum.discounted_cumsum import discounted_cumsum_left, discounted_cumsum_right
+from torch_discounted_cumsum.discounted_cumsum import discounted_cumsum_left, discounted_cumsum_right,discounted_cumsum3_left, discounted_cumsum3_right
 from torch_discounted_cumsum.version import __version__

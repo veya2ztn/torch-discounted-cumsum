@@ -119,6 +119,7 @@ torch::Tensor discounted_cumsum(torch::Tensor x, torch::Tensor gamma) {
     const int threads = 64;
     const int nstages = log2ceil(x.size(1));
     const int threads_total_x = 1 << (nstages - 1);
+    
     const dim3 blocks((threads_total_x + threads - 1) / threads, x.size(0));
 
     for (int stage=0; stage<nstages; stage++) {
@@ -135,6 +136,97 @@ torch::Tensor discounted_cumsum(torch::Tensor x, torch::Tensor gamma) {
     return y;
 }
 
+// ...
+
+template <typename scalar_t, SumDirection sum_direction>
+__global__
+void discounted_cumsum_kernel_stage3(
+    torch::PackedTensorAccessor32<scalar_t, 3> x,
+    torch::PackedTensorAccessor32<scalar_t, 1> gamma,
+    int stage,
+    bool gamma_scalar
+) {
+    const int len = x.size(2);
+    const int thread_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int thread_idy = blockIdx.y * blockDim.y + threadIdx.y;
+    const int thread_idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+    if (thread_idy >= x.size(2) || thread_idz >= x.size(1) ) {
+        return;
+    }
+
+    int stride_prev_group = 1 << stage;
+    int stride_cur_group = stride_prev_group << 1;
+
+    int group_of_thread = thread_idx >> stage;
+    int thread_in_group = thread_idx - (group_of_thread << stage);
+
+    int change_pos, discounted_pos, discount_power;
+    resolve_positions<sum_direction>(
+        stride_prev_group, stride_cur_group, group_of_thread, thread_in_group,
+        change_pos, discounted_pos, discount_power
+    );
+
+    if (change_pos >= len || discounted_pos >= len) {
+        return;
+    }
+
+    scalar_t gamma_item = gamma_scalar ? gamma[0] : gamma[thread_idy];
+
+    x[thread_idz][thread_idy][change_pos] = discounted_sum_power(
+        x[thread_idz][thread_idy][change_pos],
+        x[thread_idz][thread_idy][discounted_pos],
+        gamma_item,
+        discount_power
+    );
+}
+
+// ...
+
+template <SumDirection sum_direction>
+torch::Tensor discounted_cumsum3(torch::Tensor x, torch::Tensor gamma) {
+    // ...
+
+    TORCH_CHECK(x.dim() == 3, "Input must be 4-dimensional");
+    TORCH_CHECK(gamma.dim() == 1, "Gamma must be 1-dimensional");
+    TORCH_CHECK(gamma.size(0) == x.size(1), "Gamma dimensions must be compatible with the input");
+
+    if (x.size(2) == 0) {
+        return x;
+    }
+
+    auto y = x.clone();
+
+    const int threads = 64;
+    const int nstages = log2ceil(x.size(2));
+    const int threads_total_x = 1 << (nstages - 1);
+    const dim3 blocks((threads_total_x + threads - 1) / threads, x.size(1), x.size(0));
+
+    for (int stage=0; stage<nstages; stage++) {
+        AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "discounted_cumsum_kernel_stage", ([&] {
+            discounted_cumsum_kernel_stage3<scalar_t, sum_direction><<<blocks, threads>>>(
+                y.packed_accessor32<scalar_t, 3>(),
+                gamma.packed_accessor32<scalar_t, 1>(),
+                stage,
+                false
+            );
+        }));
+    }
+
+    return y;
+}
+
+
+// ...
+
+torch::Tensor discounted_cumsum3_left_cuda(torch::Tensor x, torch::Tensor gamma) {
+    return discounted_cumsum3<SUM_DIRECTION_LEFT>(x, gamma);
+}
+
+
+torch::Tensor discounted_cumsum3_right_cuda(torch::Tensor x, torch::Tensor gamma) {
+    return discounted_cumsum3<SUM_DIRECTION_RIGHT>(x, gamma);
+}
 
 torch::Tensor discounted_cumsum_left_cuda(torch::Tensor x, torch::Tensor gamma) {
     return discounted_cumsum<SUM_DIRECTION_LEFT>(x, gamma);
