@@ -151,7 +151,7 @@ void discounted_cumsum_kernel_stage3(
     const int thread_idy = blockIdx.y * blockDim.y + threadIdx.y;
     const int thread_idz = blockIdx.z * blockDim.z + threadIdx.z;
 
-    if (thread_idy >= x.size(2) || thread_idz >= x.size(1) ) {
+    if (thread_idy >= x.size(1) || thread_idz >= x.size(0) ) {
         return;
     }
 
@@ -180,6 +180,52 @@ void discounted_cumsum_kernel_stage3(
         discount_power
     );
 }
+
+
+// template <typename scalar_t, SumDirection sum_direction>
+// __global__
+// void discounted_cumsum_kernel_contract(
+//     torch::PackedTensorAccessor32<scalar_t, 3> q,
+//     torch::PackedTensorAccessor32<scalar_t, 3> k,
+//     torch::PackedTensorAccessor32<scalar_t, 3> v,
+//     torch::PackedTensorAccessor32<scalar_t, 1> g,
+//     int stage,
+//     bool gamma_scalar,
+// ) {
+//     const int len = q.size(2);
+//     const int thread_idx = blockIdx.x * blockDim.x + threadIdx.x;
+//     const int thread_idy = blockIdx.y * blockDim.y + threadIdx.y;
+//     const int thread_idz = blockIdx.z * blockDim.z + threadIdx.z;
+
+//     if (thread_idy >= x.size(1) || thread_idz >= x.size(0)  ) {
+//         return;
+//     }
+
+//     int stride_prev_group = 1 << stage;
+//     int stride_cur_group = stride_prev_group << 1;
+
+//     int group_of_thread = thread_idx >> stage;
+//     int thread_in_group = thread_idx - (group_of_thread << stage);
+
+//     int change_pos, discounted_pos, discount_power;
+//     resolve_positions<sum_direction>(
+//         stride_prev_group, stride_cur_group, group_of_thread, thread_in_group,
+//         change_pos, discounted_pos, discount_power
+//     );
+
+//     if (change_pos >= len || discounted_pos >= len) {
+//         return;
+//     }
+
+//     scalar_t gamma_item = gamma_scalar ? gamma[0] : gamma[thread_idy];
+
+//     x[thread_idz][thread_idy][change_pos] = discounted_sum_power(
+//         x[thread_idz][thread_idy][change_pos],
+//         x[thread_idz][thread_idy][discounted_pos],
+//         gamma_item,
+//         discount_power
+//     );
+// }
 
 // ...
 
@@ -215,6 +261,69 @@ torch::Tensor discounted_cumsum3(torch::Tensor x, torch::Tensor gamma) {
 
     return y;
 }
+
+
+//discounted_cumsum_contract is meanless, since we can not avoid genereate the intermediate
+// template <SumDirection sum_direction>
+// torch::Tensor discounted_cumsum_contract(torch::Tensor q, //(BH,D1,S)
+//                                          torch::Tensor k, //(BH,D1,S)
+//                                          torch::Tensor v, //(BH,D2,S)
+//                                          torch::Tensor g  //(BH,)
+// ) {
+//     // ...
+
+//     TORCH_CHECK(q.device().is_cuda(), "Input q must be a CUDA tensor");
+//     TORCH_CHECK(k.device().is_cuda(), "Input k must be a CUDA tensor");
+//     TORCH_CHECK(v.device().is_cuda(), "Input v must be a CUDA tensor");
+//     TORCH_CHECK(g.device().is_cuda(), "Gamma g must be a CUDA tensor");
+
+//     TORCH_CHECK(q.is_contiguous()   , "Input q must be contiguous");
+//     TORCH_CHECK(k.is_contiguous()   , "Input k must be contiguous");
+//     TORCH_CHECK(v.is_contiguous()   , "Input v must be contiguous");
+
+//     TORCH_CHECK(q.dim() == 3, "Input q must be 3-dimensional");
+//     TORCH_CHECK(k.dim() == 3, "Input k must be 3-dimensional");
+//     TORCH_CHECK(v.dim() == 3, "Input v must be 3-dimensional");
+//     TORCH_CHECK(g.dim() == 1, "Gamma g must be 1-dimensional");
+
+//     TORCH_CHECK(x.dtype() == y.dtype(), "Argument data x-y types must match");
+//     TORCH_CHECK(x.dtype() == z.dtype(), "Argument data x-z types must match");
+//     TORCH_CHECK(x.dtype() == g.dtype(), "Argument data x-g types must match");
+
+//     // bool gamma_scalar = g.size(0) != x.size(0);
+//     TORCH_CHECK(g.size(0) == x.size(0), "Batchsize level must match");
+//     TORCH_CHECK(q.size(1) == k.size(1), "QK dimension  must match");
+//     TORCH_CHECK(k.size(2) == v.size(2), "KV sequence length  must match");
+//     TORCH_CHECK(q.size(2) == v.size(2), "QV sequence length  must match");
+    
+//     int D1=q.size(1);
+//     int D2=v.size(1);
+//     int S1=v.size(2);   
+    
+//     const int threads = 64;
+//     const int nstages = log2ceil(S2);
+//     const int threads_total_x = 1 << (nstages - 1);
+    
+//     const dim3 blocks((threads_total_x + threads - 1) / threads, x.size(0));
+
+//     auto o = v.clone();
+
+//     for (int stage=0; stage<nstages; stage++) {
+//         AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "discounted_cumsum_kernel_contract", ([&] {
+//             discounted_cumsum_kernel_contract<scalar_t, sum_direction><<<blocks, threads>>>(
+//                 q.packed_accessor32<scalar_t, 3>(),
+//                 k.packed_accessor32<scalar_t, 3>(),
+//                 v.packed_accessor32<scalar_t, 3>(),
+//                 g.packed_accessor32<scalar_t, 1>(),
+//                 stage,
+//                 False,
+//                 o.packed_accessor32<scalar_t, 3>(),
+//             );
+//         }));
+//     }
+
+//     return p;
+// }
 
 
 // ...
