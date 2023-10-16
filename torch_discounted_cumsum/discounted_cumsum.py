@@ -89,17 +89,23 @@ def _discounted_cumsum3_right_dispatcher(input, gamma):
     else:
         return torch_discounted_cumsum_cpu.discounted_cumsum_right_cpu(input, gamma)
 
-class DiscountedCumSumLeftFunction(torch.autograd.Function):
+class DiscountedCumSumFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, gamma, gamma_requires_grad):
-        output = _discounted_cumsum_left_dispatcher(input, gamma)
+    def setup_context(ctx, inputs, output):
+        x, gamma = inputs
+        gamma_requires_grad = gamma.requires_grad
         ctx.save_for_backward(output if gamma_requires_grad else None, gamma)
+
+class DiscountedCumSumLeftFunction(DiscountedCumSumFunction):
+    @staticmethod
+    def forward(input, gamma):
+        output = _discounted_cumsum_left_dispatcher(input.float(), gamma).to(input)
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
         output, gamma = ctx.saved_tensors
-        grad_input = _discounted_cumsum_right_dispatcher(grad_output, gamma)
+        grad_input = _discounted_cumsum_right_dispatcher(grad_output.float(), gamma).to(output)
         grad_gamma = None
         if output is not None:
             z = _discounted_cumsum_left_dispatcher(output, gamma)
@@ -108,17 +114,17 @@ class DiscountedCumSumLeftFunction(torch.autograd.Function):
             grad_gamma = (z * dLdy).sum(dim=1)
         return grad_input, grad_gamma, None
 
-class DiscountedCumSumRightFunction(torch.autograd.Function):
+
+class DiscountedCumSumRightFunction(DiscountedCumSumFunction):
     @staticmethod
-    def forward(ctx, input, gamma, gamma_requires_grad):
-        output = _discounted_cumsum_right_dispatcher(input, gamma)
-        ctx.save_for_backward(output if gamma_requires_grad else None, gamma)
+    def forward(input, gamma):
+        output = _discounted_cumsum_right_dispatcher(input.float(), gamma).to(input)
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
         output, gamma = ctx.saved_tensors
-        grad_input = _discounted_cumsum_left_dispatcher(grad_output, gamma)
+        grad_input = _discounted_cumsum_left_dispatcher(grad_output.float(), gamma).to(output)
         grad_gamma = None
         if output is not None:
             z = _discounted_cumsum_right_dispatcher(output, gamma)
@@ -128,18 +134,30 @@ class DiscountedCumSumRightFunction(torch.autograd.Function):
             #print(dLdy.shape)
             grad_gamma = (z * dLdy).sum(dim=1)
         return grad_input, grad_gamma, None
+  
+    # @staticmethod
+    # def vmap(info, in_dims, x, gamma):
+    #     x_bdim, gamma_bdim = in_dims
+    #     # x = x.movedim(x_bdim, 0)
+    #     assert x_bdim == 0, "x must be batched over the first dimension"
+    #     assert gamma_bdim is None, "gamma must be unbatched"
+    #     DiscountedCumSumRightFunction.apply(x, gamma)
+    #     # The strategy is: expand {x, ind, ind_inv} to all have the dimension
+    #     # being vmapped over.
+    #     # Then, call back into NumpyTake(expanded_x, expanded_ind, expanded_ind_inv, new_dim).
+    #     return DiscountedCumSumRightFunction.apply(x, gamma), 0
 
-class DiscountedCumSum3RightFunction(torch.autograd.Function):
+
+class DiscountedCumSum3RightFunction(DiscountedCumSumFunction):
     @staticmethod
-    def forward(ctx, input, gamma, gamma_requires_grad):
-        output = _discounted_cumsum3_right_dispatcher(input, gamma)
-        ctx.save_for_backward(output if gamma_requires_grad else None, gamma)
-        return output
+    def forward(input, gamma):
+        output = _discounted_cumsum3_right_dispatcher(input.float(), gamma).to(input)
+        return output.to(input)
 
     @staticmethod
     def backward(ctx, grad_output):
         output, gamma = ctx.saved_tensors
-        grad_input = _discounted_cumsum3_left_dispatcher(grad_output, gamma)
+        grad_input = _discounted_cumsum3_left_dispatcher(grad_output.float(), gamma).to(output)
         grad_gamma = None
         if output is not None:
             z = _discounted_cumsum3_right_dispatcher(output, gamma)
@@ -150,17 +168,17 @@ class DiscountedCumSum3RightFunction(torch.autograd.Function):
             grad_gamma = (z * dLdy).sum(dim=-1)
         return grad_input, grad_gamma, None
 
-class DiscountedCumSum3LeftFunction(torch.autograd.Function):
+
+class DiscountedCumSum3LeftFunction(DiscountedCumSumFunction):
     @staticmethod
-    def forward(ctx, input, gamma, gamma_requires_grad):
-        output = _discounted_cumsum3_left_dispatcher(input, gamma)
-        ctx.save_for_backward(output if gamma_requires_grad else None, gamma)
+    def forward(input, gamma):
+        output = _discounted_cumsum3_left_dispatcher(input.float(), gamma).to(input)
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
         output, gamma = ctx.saved_tensors
-        grad_input = _discounted_cumsum3_right_dispatcher(grad_output, gamma)
+        grad_input = _discounted_cumsum3_right_dispatcher(grad_output.float(), gamma).to(output)
         grad_gamma = None
         if output is not None:
             z = _discounted_cumsum3_left_dispatcher(output, gamma)
@@ -170,29 +188,25 @@ class DiscountedCumSum3LeftFunction(torch.autograd.Function):
         return grad_input, grad_gamma, None
 
 def discounted_cumsum_left(input, gamma):
-    if not torch.is_tensor(gamma):
-        gamma = torch.tensor(gamma).to(input)
+    assert torch.is_tensor(input)
+    assert torch.is_tensor(gamma)
     if gamma.dim() == 0:
         gamma = gamma.reshape(-1)
-    return DiscountedCumSumLeftFunction.apply(input, gamma, gamma.requires_grad)
+    return DiscountedCumSumLeftFunction.apply(input, gamma)
 
 def discounted_cumsum_right(input, gamma):
-    if not torch.is_tensor(gamma):
-        gamma = torch.tensor(gamma).to(input)
-    if gamma.dim() == 0:
-        gamma = gamma.reshape(-1)
-    return DiscountedCumSumRightFunction.apply(input, gamma, gamma.requires_grad)
+    assert torch.is_tensor(input)
+    assert torch.is_tensor(gamma)
+    if gamma.dim() == 0:gamma = gamma.reshape(-1)
+    return DiscountedCumSumRightFunction.apply(input, gamma)
 
 def discounted_cumsum3_right(input, gamma):
-    if not torch.is_tensor(gamma):
-        gamma = torch.tensor(gamma).to(input)
-    if gamma.dim() == 0:
-        gamma = gamma.reshape(-1)
-    return DiscountedCumSum3RightFunction.apply(input, gamma, gamma.requires_grad)
+    assert torch.is_tensor(input)
+    assert torch.is_tensor(gamma)
+    return DiscountedCumSum3RightFunction.apply(input, gamma)
 
 def discounted_cumsum3_left(input, gamma):
-    if not torch.is_tensor(gamma):
-        gamma = torch.tensor(gamma).to(input)
-    if gamma.dim() == 0:
-        gamma = gamma.reshape(-1)
-    return DiscountedCumSum3LeftFunction.apply(input, gamma, gamma.requires_grad)
+    assert torch.is_tensor(input)
+    assert torch.is_tensor(gamma)
+    if gamma.dim() == 0:gamma = gamma.reshape(-1)
+    return DiscountedCumSum3LeftFunction.apply(input, gamma)

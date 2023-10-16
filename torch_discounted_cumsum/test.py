@@ -2,7 +2,7 @@ import os
 
 import torch
 from torch.utils.cpp_extension import load
-
+from flash_attn import flash_attn_qkvpacked_func, flash_attn_func
 VERBOSE = False
 
 
@@ -83,13 +83,13 @@ class DiscountedCumSumFunction(torch.autograd.Function):
 class DiscountedCumSumLeftFunction(DiscountedCumSumFunction):
     @staticmethod
     def forward(input, gamma):
-        output = _discounted_cumsum_left_dispatcher(input, gamma)
+        output = _discounted_cumsum_left_dispatcher(input.float(), gamma).to(input)
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
         output, gamma = ctx.saved_tensors
-        grad_input = _discounted_cumsum_right_dispatcher(grad_output, gamma)
+        grad_input = _discounted_cumsum_right_dispatcher(grad_output.float(), gamma).to(output)
         grad_gamma = None
         if output is not None:
             z = _discounted_cumsum_left_dispatcher(output, gamma)
@@ -102,13 +102,13 @@ class DiscountedCumSumLeftFunction(DiscountedCumSumFunction):
 class DiscountedCumSumRightFunction(DiscountedCumSumFunction):
     @staticmethod
     def forward(input, gamma):
-        output = _discounted_cumsum_right_dispatcher(input, gamma)
+        output = _discounted_cumsum_right_dispatcher(input.float(), gamma).to(input)
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
         output, gamma = ctx.saved_tensors
-        grad_input = _discounted_cumsum_left_dispatcher(grad_output, gamma)
+        grad_input = _discounted_cumsum_left_dispatcher(grad_output, gamma).to(output)
         grad_gamma = None
         if output is not None:
             z = _discounted_cumsum_right_dispatcher(output, gamma)
@@ -135,13 +135,13 @@ class DiscountedCumSumRightFunction(DiscountedCumSumFunction):
 class DiscountedCumSum3RightFunction(DiscountedCumSumFunction):
     @staticmethod
     def forward(input, gamma):
-        output = _discounted_cumsum3_right_dispatcher(input, gamma)
-        return output
+        output = _discounted_cumsum3_right_dispatcher(input.float(), gamma).to(input)
+        return output.to(input)
 
     @staticmethod
     def backward(ctx, grad_output):
         output, gamma = ctx.saved_tensors
-        grad_input = _discounted_cumsum3_left_dispatcher(grad_output, gamma)
+        grad_input = _discounted_cumsum3_left_dispatcher(grad_output.float(), gamma).to(output)
         grad_gamma = None
         if output is not None:
             z = _discounted_cumsum3_right_dispatcher(output, gamma)
@@ -156,13 +156,13 @@ class DiscountedCumSum3RightFunction(DiscountedCumSumFunction):
 class DiscountedCumSum3LeftFunction(DiscountedCumSumFunction):
     @staticmethod
     def forward(input, gamma):
-        output = _discounted_cumsum3_left_dispatcher(input, gamma)
+        output = _discounted_cumsum3_left_dispatcher(input.float(), gamma).to(input)
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
         output, gamma = ctx.saved_tensors
-        grad_input = _discounted_cumsum3_right_dispatcher(grad_output, gamma)
+        grad_input = _discounted_cumsum3_right_dispatcher(grad_output.float(), gamma).to(output)
         grad_gamma = None
         if output is not None:
             z = _discounted_cumsum3_left_dispatcher(output, gamma)
@@ -216,7 +216,7 @@ if __name__ == '__main__':
 
     #gamma = torch.Tensor([0.99, 0.98, 0.07]).cuda()
     gamma = torch.randn(H).cuda()
-    x     = torch.randn(B, D, H, S).cuda()
+    x     = torch.randn(B, D, H, S).cuda().bfloat16()
     y_N1 = discounted_cumsum3_right(x.flatten(0,1), gamma).flatten(0,1)
     # print(y_N1[0])
     # print(y_N1[-1])
