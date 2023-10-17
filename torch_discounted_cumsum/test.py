@@ -293,6 +293,40 @@ def weighted_cumsum_batch(input, weight):
     assert torch.is_tensor(weight)
     return WeightedCumSumBatchFunction.apply(input, weight)
 
+def _qkvg_retention_dispatcher(q, k,v,g):
+    if not torch.is_tensor(q):raise ValueError('q must be a torch.Tensor')
+    if not torch.is_tensor(k):raise ValueError('k must be a torch.Tensor')
+    if not torch.is_tensor(v):raise ValueError('v must be a torch.Tensor')
+    if not torch.is_tensor(g):raise ValueError('g must be a torch.Tensor')
+
+    if q.is_cuda:
+        if torch_discounted_cumsum_cuda is None:
+            raise EnvironmentError(f'Failed to load native CUDA module')
+        return torch_discounted_cumsum_cuda.qkvg_retention_cuda(q.contiguous(), k.contiguous(), v.contiguous(), g.contiguous())
+    else:
+        raise 
+
+class QKVGFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(q, k,v,g):
+        output = _qkvg_retention_dispatcher(q.float(), k.float(), v.float(), g.float()).to(q)
+        return output
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        q, k,v,g = inputs
+        weight_requires_grad = g.requires_grad
+        ctx.save_for_backward(output if weight_requires_grad else None, g)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        raise 
+
+def qkvg_retention(q, k,v,g):
+    return QKVGFunction.apply(q, k,v,g)
+
+
+
 
 def get_omask(slen,num_heads):
     decay = torch.log(1 - 2**(-5 - torch.arange(num_heads, dtype=torch.float)))
@@ -308,10 +342,33 @@ def get_omask(slen,num_heads):
     return mask
 
 if __name__ == '__main__':
-    B=16
+    B=1
     D=1
-    H=3
-    S=64
+    H=1
+    S=5
+    # q = torch.randn(B, H, S, D).cuda()
+    # k = torch.randn(B, H, S, D).cuda()
+    # v = torch.randn(B, H, S, D).cuda()
+    # g = get_omask(S,H).cuda()
+    # o1 = qkvg_retention(q,k,v,g)
+    # o2 = torch.einsum('bhia,bhja,bhjc,hij->bhic', q, k, v, g)
+    # print(torch.dist(o1,o2))
+    # print("="*10)
+    # print(q[0,0])
+    # print(k[0,0])
+    # print(v[0,0])
+    # print(g[0])
+    # print("="*10)
+    # print(o1[0,0])
+    # print(o2[0,0])
+    # exit()
+
+
+
+
+
+
+
     # K = 2
     # gamma = torch.Tensor([0.99]).cuda()
     # x = torch.ones(1, N).cuda()
