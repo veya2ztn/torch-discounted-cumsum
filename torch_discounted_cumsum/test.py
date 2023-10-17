@@ -24,7 +24,6 @@ if torch.cuda.is_available():
         verbose=VERBOSE,
     )
 
-
 def _discounted_cumsum_left_dispatcher(input, gamma):
     if not torch.is_tensor(input):
         raise ValueError('Input must be a torch.Tensor')
@@ -60,6 +59,31 @@ def _discounted_cumsum_right_dispatcher(input, gamma):
         return torch_discounted_cumsum_cuda.discounted_cumsum_right_cuda(input.contiguous(), gamma.contiguous())
     else:
         return torch_discounted_cumsum_cpu.discounted_cumsum_right_cpu(input, gamma)
+
+def _weighted_cumsum_dispatcher(input, weight):
+    if not torch.is_tensor(input):
+        raise ValueError('Input must be a torch.Tensor')
+    if not torch.is_tensor(weight):
+        raise ValueError('weight must be a torch.Tensor')
+    if input.is_cuda:
+        if torch_discounted_cumsum_cuda is None:
+            raise EnvironmentError(f'Failed to load native CUDA module')
+        return torch_discounted_cumsum_cuda.weighted_cumsum_cuda(input.contiguous(), weight.contiguous())
+    else:
+        raise 
+
+def _weighted_cumsum_batch_dispatcher(input, weight):
+    if not torch.is_tensor(input):
+        raise ValueError('Input must be a torch.Tensor')
+    if not torch.is_tensor(weight):
+        raise ValueError('weight must be a torch.Tensor')
+    if input.is_cuda:
+        if torch_discounted_cumsum_cuda is None:
+            raise EnvironmentError(f'Failed to load native CUDA module')
+        return torch_discounted_cumsum_cuda.weighted_cumsum_batch_cuda(input.contiguous(), weight.contiguous())
+    else:
+        raise 
+
 
 def _discounted_cumsum3_right_dispatcher(input, gamma):
     if not torch.is_tensor(input):
@@ -98,7 +122,6 @@ class DiscountedCumSumLeftFunction(DiscountedCumSumFunction):
             grad_gamma = (z * dLdy).sum(dim=1)
         return grad_input, grad_gamma, None
 
-
 class DiscountedCumSumRightFunction(DiscountedCumSumFunction):
     @staticmethod
     def forward(input, gamma):
@@ -108,7 +131,7 @@ class DiscountedCumSumRightFunction(DiscountedCumSumFunction):
     @staticmethod
     def backward(ctx, grad_output):
         output, gamma = ctx.saved_tensors
-        grad_input = _discounted_cumsum_left_dispatcher(grad_output, gamma).to(output)
+        grad_input = _discounted_cumsum_left_dispatcher(grad_output.float(), gamma).to(output)
         grad_gamma = None
         if output is not None:
             z = _discounted_cumsum_right_dispatcher(output, gamma)
@@ -131,7 +154,6 @@ class DiscountedCumSumRightFunction(DiscountedCumSumFunction):
     #     # Then, call back into NumpyTake(expanded_x, expanded_ind, expanded_ind_inv, new_dim).
     #     return DiscountedCumSumRightFunction.apply(x, gamma), 0
 
-
 class DiscountedCumSum3RightFunction(DiscountedCumSumFunction):
     @staticmethod
     def forward(input, gamma):
@@ -152,7 +174,6 @@ class DiscountedCumSum3RightFunction(DiscountedCumSumFunction):
             grad_gamma = (z * dLdy).sum(dim=-1)
         return grad_input, grad_gamma, None
 
-
 class DiscountedCumSum3LeftFunction(DiscountedCumSumFunction):
     @staticmethod
     def forward(input, gamma):
@@ -171,12 +192,79 @@ class DiscountedCumSum3LeftFunction(DiscountedCumSumFunction):
             grad_gamma = (z * dLdy).sum(dim=-1)
         return grad_input, grad_gamma, None
 
+class WeightedCumSumFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input, weight):
+        output = _weighted_cumsum_dispatcher(input.float(), weight).to(input)
+        return output
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        x, weight = inputs
+        weight_requires_grad = weight.requires_grad
+        ctx.save_for_backward(output if weight_requires_grad else None, weight)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        output, weight = ctx.saved_tensors
+        grad_input = _weighted_cumsum_left_dispatcher(grad_output.float(), weight).to(output)
+        grad_gamma = None
+        if output is not None:
+            raise 
+        return grad_input, grad_gamma, None
+  
+    # @staticmethod
+    # def vmap(info, in_dims, x, gamma):
+    #     x_bdim, gamma_bdim = in_dims
+    #     # x = x.movedim(x_bdim, 0)
+    #     assert x_bdim == 0, "x must be batched over the first dimension"
+    #     assert gamma_bdim is None, "gamma must be unbatched"
+    #     DiscountedCumSumRightFunction.apply(x, gamma)
+    #     # The strategy is: expand {x, ind, ind_inv} to all have the dimension
+    #     # being vmapped over.
+    #     # Then, call back into NumpyTake(expanded_x, expanded_ind, expanded_ind_inv, new_dim).
+    #     return DiscountedCumSumRightFunction.apply(x, gamma), 0
+
+class WeightedCumSumBatchFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input, weight):
+        output = _weighted_cumsum_batch_dispatcher(input.float(), weight).to(input)
+        return output
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        x, weight = inputs
+        weight_requires_grad = weight.requires_grad
+        ctx.save_for_backward(output if weight_requires_grad else None, weight)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        output, weight = ctx.saved_tensors
+        grad_input = _weighted_cumsum_left_dispatcher(grad_output.float(), weight).to(output)
+        grad_gamma = None
+        if output is not None:
+            raise 
+        return grad_input, grad_gamma, None
+  
+    # @staticmethod
+    # def vmap(info, in_dims, x, gamma):
+    #     x_bdim, gamma_bdim = in_dims
+    #     # x = x.movedim(x_bdim, 0)
+    #     assert x_bdim == 0, "x must be batched over the first dimension"
+    #     assert gamma_bdim is None, "gamma must be unbatched"
+    #     DiscountedCumSumRightFunction.apply(x, gamma)
+    #     # The strategy is: expand {x, ind, ind_inv} to all have the dimension
+    #     # being vmapped over.
+    #     # Then, call back into NumpyTake(expanded_x, expanded_ind, expanded_ind_inv, new_dim).
+    #     return DiscountedCumSumRightFunction.apply(x, gamma), 0
+
+
 def discounted_cumsum_left(input, gamma):
     assert torch.is_tensor(input)
     assert torch.is_tensor(gamma)
     if gamma.dim() == 0:
         gamma = gamma.reshape(-1)
-    return DiscountedCumSumLeftFunction.apply(input, gamma, gamma.requires_grad)
+    return DiscountedCumSumLeftFunction.apply(input, gamma)
 
 def discounted_cumsum_right(input, gamma):
     assert torch.is_tensor(input)
@@ -189,17 +277,41 @@ def discounted_cumsum3_right(input, gamma):
     assert torch.is_tensor(gamma)
     return DiscountedCumSum3RightFunction.apply(input, gamma)
 
-def discounted_cumsum_left(input, gamma):
+def discounted_cumsum3_left(input, gamma):
     assert torch.is_tensor(input)
     assert torch.is_tensor(gamma)
     if gamma.dim() == 0:gamma = gamma.reshape(-1)
-    return DiscountedCumSum3LeftFunction.apply(input, gamma, gamma.requires_grad)
+    return DiscountedCumSum3LeftFunction.apply(input, gamma)
+
+def weighted_cumsum(input, weight):
+    assert torch.is_tensor(input)
+    assert torch.is_tensor(weight)
+    return WeightedCumSumFunction.apply(input, weight)
+
+def weighted_cumsum_batch(input, weight):
+    assert torch.is_tensor(input)
+    assert torch.is_tensor(weight)
+    return WeightedCumSumBatchFunction.apply(input, weight)
+
+
+def get_omask(slen,num_heads):
+    decay = torch.log(1 - 2**(-5 - torch.arange(num_heads, dtype=torch.float)))
+    index= torch.arange(slen).float()
+    mask = torch.tril(torch.ones(slen, slen))
+    mask = torch.masked_fill(index[:, None] - index[None, :], ~mask.bool(), torch.inf)
+    mask = torch.exp(mask * decay[:, None, None])
+
+    mask = torch.nan_to_num(mask)
+    #omask = mask.unsqueeze(0)  # [1, h, t, t]
+    # mask = omask / omask.sum(dim=-1, keepdim=True).sqrt()
+    # mask = torch.nan_to_num(mask, nan=0.0)
+    return mask
 
 if __name__ == '__main__':
-    B=2
-    D=16
-    H=2
-    S=2
+    B=16
+    D=1
+    H=3
+    S=64
     # K = 2
     # gamma = torch.Tensor([0.99]).cuda()
     # x = torch.ones(1, N).cuda()
@@ -215,13 +327,44 @@ if __name__ == '__main__':
     
 
     #gamma = torch.Tensor([0.99, 0.98, 0.07]).cuda()
-    gamma = torch.randn(H).cuda()
-    x     = torch.randn(B, D, H, S).cuda().bfloat16()
-    y_N1 = discounted_cumsum3_right(x.flatten(0,1), gamma).flatten(0,1)
+
+    omask = get_omask(S,H).cuda() # (H,S,S) -> 
+    gamma = omask[:,1,0]
+    x     = torch.randn(B,H,S).cuda() 
+    #y_N1 = discounted_cumsum_left(x.flatten(0,1), gamma.repeat(B)).reshape(B,H,S)
+    y_N1 = discounted_cumsum_left(x[:,0], gamma[0].repeat(B)) #(B,S) and (H)
+    #print(y_N1.mean())
+    y_N3 = weighted_cumsum(x[:,0],omask[0])
+    #print(y_N3.mean())
+    #print(x[:,0].shape)
+    #print(omask[0].shape)
+    print(torch.dist(y_N1,y_N3))
+    #print(y_N1.shape)
+    #print(y_N1)
+    print("==============================")
+    y_N1 = discounted_cumsum_left(x.flatten(0,1), gamma.repeat(B)).reshape(B,H,S)
+    y_N2 = discounted_cumsum3_left(x,gamma)
+    y_N3 = weighted_cumsum_batch(x,omask)
+    print(x.shape)
+    print(gamma.shape)
+    print(omask.shape)
+    print(torch.dist(y_N1,y_N3))
+    print(torch.dist(y_N1,y_N2))
+    #print(y_N1.shape)
+    #print(y_N1)
+    # print(gamma)
+    # print(x)
+    # print(omask[0])
+    # print("==============================")
+    # print(y_N1)
+    # print(y_N3)
     # print(y_N1[0])
     # print(y_N1[-1])
     # print("="*20)
-    y_N2 = discounted_cumsum_right(x.flatten(0,2), gamma.repeat(B*D))
+    #y_N2 = discounted_cumsum_right(x.flatten(0,2), gamma.repeat(B*D))
+   
+    #y_N3 = weighted_cumsum_right(, )
+    exit()
     # print(y_N2[0])
     # print(y_N2[-1])
     # print("=============")

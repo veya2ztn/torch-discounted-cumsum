@@ -77,6 +77,31 @@ def _discounted_cumsum_right_dispatcher(input, gamma):
     else:
         return torch_discounted_cumsum_cpu.discounted_cumsum_right_cpu(input, gamma)
 
+def _weighted_cumsum_dispatcher(input, weight):
+    if not torch.is_tensor(input):
+        raise ValueError('Input must be a torch.Tensor')
+    if not torch.is_tensor(weight):
+        raise ValueError('weight must be a torch.Tensor')
+    if input.is_cuda:
+        if torch_discounted_cumsum_cuda is None:
+            raise EnvironmentError(f'Failed to load native CUDA module')
+        return torch_discounted_cumsum_cuda.weighted_cumsum_cuda(input.contiguous(), weight.contiguous())
+    else:
+        raise 
+
+def _weighted_cumsum_batch_dispatcher(input, weight):
+    if not torch.is_tensor(input):
+        raise ValueError('Input must be a torch.Tensor')
+    if not torch.is_tensor(weight):
+        raise ValueError('weight must be a torch.Tensor')
+    if input.is_cuda:
+        if torch_discounted_cumsum_cuda is None:
+            raise EnvironmentError(f'Failed to load native CUDA module')
+        return torch_discounted_cumsum_cuda.weighted_cumsum_batch_cuda(input.contiguous(), weight.contiguous())
+    else:
+        raise 
+
+
 def _discounted_cumsum3_right_dispatcher(input, gamma):
     if not torch.is_tensor(input):
         raise ValueError('Input must be a torch.Tensor')
@@ -114,7 +139,6 @@ class DiscountedCumSumLeftFunction(DiscountedCumSumFunction):
             grad_gamma = (z * dLdy).sum(dim=1)
         return grad_input, grad_gamma, None
 
-
 class DiscountedCumSumRightFunction(DiscountedCumSumFunction):
     @staticmethod
     def forward(input, gamma):
@@ -147,7 +171,6 @@ class DiscountedCumSumRightFunction(DiscountedCumSumFunction):
     #     # Then, call back into NumpyTake(expanded_x, expanded_ind, expanded_ind_inv, new_dim).
     #     return DiscountedCumSumRightFunction.apply(x, gamma), 0
 
-
 class DiscountedCumSum3RightFunction(DiscountedCumSumFunction):
     @staticmethod
     def forward(input, gamma):
@@ -168,7 +191,6 @@ class DiscountedCumSum3RightFunction(DiscountedCumSumFunction):
             grad_gamma = (z * dLdy).sum(dim=-1)
         return grad_input, grad_gamma, None
 
-
 class DiscountedCumSum3LeftFunction(DiscountedCumSumFunction):
     @staticmethod
     def forward(input, gamma):
@@ -186,6 +208,73 @@ class DiscountedCumSum3LeftFunction(DiscountedCumSumFunction):
             dLdy = grad_output[..., 1:]
             grad_gamma = (z * dLdy).sum(dim=-1)
         return grad_input, grad_gamma, None
+
+class WeightedCumSumFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input, weight):
+        output = _weighted_cumsum_dispatcher(input.float(), weight).to(input)
+        return output
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        x, weight = inputs
+        weight_requires_grad = weight.requires_grad
+        ctx.save_for_backward(output if weight_requires_grad else None, weight)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        output, weight = ctx.saved_tensors
+        grad_input = _weighted_cumsum_left_dispatcher(grad_output.float(), weight).to(output)
+        grad_gamma = None
+        if output is not None:
+            raise 
+        return grad_input, grad_gamma, None
+  
+    # @staticmethod
+    # def vmap(info, in_dims, x, gamma):
+    #     x_bdim, gamma_bdim = in_dims
+    #     # x = x.movedim(x_bdim, 0)
+    #     assert x_bdim == 0, "x must be batched over the first dimension"
+    #     assert gamma_bdim is None, "gamma must be unbatched"
+    #     DiscountedCumSumRightFunction.apply(x, gamma)
+    #     # The strategy is: expand {x, ind, ind_inv} to all have the dimension
+    #     # being vmapped over.
+    #     # Then, call back into NumpyTake(expanded_x, expanded_ind, expanded_ind_inv, new_dim).
+    #     return DiscountedCumSumRightFunction.apply(x, gamma), 0
+
+class WeightedCumSumBatchFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input, weight):
+        output = _weighted_cumsum_batch_dispatcher(input.float(), weight).to(input)
+        return output
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        x, weight = inputs
+        weight_requires_grad = weight.requires_grad
+        ctx.save_for_backward(output if weight_requires_grad else None, weight)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        output, weight = ctx.saved_tensors
+        grad_input = _weighted_cumsum_left_dispatcher(grad_output.float(), weight).to(output)
+        grad_gamma = None
+        if output is not None:
+            raise 
+        return grad_input, grad_gamma, None
+  
+    # @staticmethod
+    # def vmap(info, in_dims, x, gamma):
+    #     x_bdim, gamma_bdim = in_dims
+    #     # x = x.movedim(x_bdim, 0)
+    #     assert x_bdim == 0, "x must be batched over the first dimension"
+    #     assert gamma_bdim is None, "gamma must be unbatched"
+    #     DiscountedCumSumRightFunction.apply(x, gamma)
+    #     # The strategy is: expand {x, ind, ind_inv} to all have the dimension
+    #     # being vmapped over.
+    #     # Then, call back into NumpyTake(expanded_x, expanded_ind, expanded_ind_inv, new_dim).
+    #     return DiscountedCumSumRightFunction.apply(x, gamma), 0
+
 
 def discounted_cumsum_left(input, gamma):
     assert torch.is_tensor(input)
@@ -210,3 +299,14 @@ def discounted_cumsum3_left(input, gamma):
     assert torch.is_tensor(gamma)
     if gamma.dim() == 0:gamma = gamma.reshape(-1)
     return DiscountedCumSum3LeftFunction.apply(input, gamma)
+
+def weighted_cumsum(input, weight):
+    assert torch.is_tensor(input)
+    assert torch.is_tensor(weight)
+    return WeightedCumSumFunction.apply(input, weight)
+
+def weighted_cumsum_batch(input, weight):
+    assert torch.is_tensor(input)
+    assert torch.is_tensor(weight)
+    return WeightedCumSumBatchFunction.apply(input, weight)
+
