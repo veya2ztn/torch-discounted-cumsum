@@ -343,17 +343,17 @@ def get_omask(slen,num_heads):
 
 if __name__ == '__main__':
     B=1
-    D=1
-    H=1
-    S=5
-    # q = torch.randn(B, H, S, D).cuda()
-    # k = torch.randn(B, H, S, D).cuda()
-    # v = torch.randn(B, H, S, D).cuda()
-    # g = get_omask(S,H).cuda()
-    # o1 = qkvg_retention(q,k,v,g)
-    # o2 = torch.einsum('bhia,bhja,bhjc,hij->bhic', q, k, v, g)
-    # print(torch.dist(o1,o2))
-    # print("="*10)
+    D=16
+    H=64
+    S=100
+    q = torch.randn(B, H, S, D).cuda()
+    k = torch.randn(B, H, S, D).cuda()
+    v = torch.randn(B, H, S, D).cuda()
+    g = get_omask(S,H).cuda()
+    o1 = qkvg_retention(q,k,v,g)
+    o2 = torch.einsum('bhia,bhja,bhjc,hij->bhic', q, k, v, g)
+    print(torch.dist(o1,o2))
+    print("="*10)
     # print(q[0,0])
     # print(k[0,0])
     # print(v[0,0])
@@ -361,7 +361,7 @@ if __name__ == '__main__':
     # print("="*10)
     # print(o1[0,0])
     # print(o2[0,0])
-    # exit()
+    exit()
 
 
 

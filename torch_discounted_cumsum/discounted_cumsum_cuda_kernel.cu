@@ -686,9 +686,137 @@ torch::Tensor qkvg_retention(torch::Tensor q, //(B,H,S,D1)
 }
 
 
+
+template <typename scalar_t>
+__global__
+void qkvg_kernel2(
+    torch::PackedTensorAccessor32<scalar_t, 4> y,       //  (B, H, S2, D2)
+    torch::PackedTensorAccessor32<scalar_t, 4> q,       //  (B, H, S2, D1)
+    torch::PackedTensorAccessor32<scalar_t, 4> k,       //  (B, H, S1, D1)
+    torch::PackedTensorAccessor32<scalar_t, 4> v,       //  (B, H, S1, D2)
+    torch::PackedTensorAccessor32<scalar_t, 3> weight   //  (   H, S2, S1)
+) {
+    
+    const int B = q.size(0);
+    const int H = q.size(1);
+    const int D1= q.size(3);
+    const int D2= v.size(3);
+    const int S2 = q.size(2);
+    const int S1 = k.size(2);
+
+    int lt;
+    if (S2 % 2 == 0) {
+        lt = S2 / 2;
+    } else {
+        lt = (S2 - 1) / 2 + 1;
+    }
+    
+
+    const int s = blockIdx.x * blockDim.x + threadIdx.x;
+    const int hd= blockIdx.y * blockDim.y + threadIdx.y;
+    const int b = blockIdx.z * blockDim.z + threadIdx.z;
+    
+
+    if (b >= B || hd >= H*D2 || s >= lt ) {
+        return;
+    }
+    const int d2= hd/H;
+    const int h = hd%H;
+    int array[] = {s, S2 - s -1};
+    // q_
+    scalar_t temp;
+    int s2;
+
+    for(int s_i=0; s_i<2; s_i++){
+        s2 = array[s_i];
+        y[b][h][s2][d2] = 0;
+        // (q_i^a k_j^a) v_j^b
+        for (int s1 = 0; s1 <= s2; s1++) {
+            temp = 0;
+            for (int d1 = 0; d1 < D1; d1++) {
+                temp += q[b][h][s2][d1] * k[b][h][s1][d1];
+            }// --> \sum_a (q_i^a k_j^a )
+            temp *= weight[h][s2][s1] * v[b][h][s1][d2]; // T_{ijb}
+            y[b][h][s2][d2] += temp;
+        }
+    }
+    
+}
+
+torch::Tensor qkvg_retention2(torch::Tensor q, //(B,H,S,D1)
+                         torch::Tensor k, //(B,H,S,D1)
+                         torch::Tensor v, //(B,H,S,D2)
+                         torch::Tensor g  //(  H,S, S)
+) {
+    // ...
+
+    TORCH_CHECK(q.device().is_cuda(), "Input q must be a CUDA tensor");
+    TORCH_CHECK(k.device().is_cuda(), "Input k must be a CUDA tensor");
+    TORCH_CHECK(v.device().is_cuda(), "Input v must be a CUDA tensor");
+    TORCH_CHECK(g.device().is_cuda(), "Gamma g must be a CUDA tensor");
+
+    TORCH_CHECK(q.is_contiguous()   , "Input q must be contiguous");
+    TORCH_CHECK(k.is_contiguous()   , "Input k must be contiguous");
+    TORCH_CHECK(v.is_contiguous()   , "Input v must be contiguous");
+
+    TORCH_CHECK(q.dim() == 4, "Input q must be 4-dimensional");
+    TORCH_CHECK(k.dim() == 4, "Input k must be 4-dimensional");
+    TORCH_CHECK(v.dim() == 4, "Input v must be 4-dimensional");
+    TORCH_CHECK(g.dim() == 3, "Gamma g must be 3-dimensional");
+
+    TORCH_CHECK(q.dtype() == k.dtype(), "Argument data x-y types must match");
+    TORCH_CHECK(q.dtype() == v.dtype(), "Argument data x-z types must match");
+    TORCH_CHECK(q.dtype() == g.dtype(), "Argument data x-g types must match");
+
+    // bool gamma_scalar = g.size(0) != x.size(0);
+    TORCH_CHECK(k.size(0) == q.size(0), "Batchsize level must match");
+    TORCH_CHECK(q.size(3) == k.size(3), "QK dimension  must match");
+    TORCH_CHECK(k.size(2) == v.size(2), "KV sequence length  must match");
+    TORCH_CHECK(q.size(2) == v.size(2), "QV sequence length  must match");
+
+    const int D1=q.size(3);
+    const int D2=v.size(3);
+    const int H =q.size(1);   
+    const int S =q.size(2);   
+    const int B =q.size(0);
+
+    int St;
+    if (S % 2 == 0) {
+        St = S / 2;
+    } else {
+        St = (S - 1) / 2 + 1;
+    }
+    
+    const int threads_S = getOptimalThreadsPerBlock(St, 0, 512); //only need half of the dimension. In each dimension, we fully fill O(S) computation
+    const int threads_H = getOptimalThreadsPerBlock(H*D2, 1, 1024/threads_S);
+    const int threads_B = getOptimalThreadsPerBlock( B, 2, 1024/threads_S/threads_H);
+    // thread has limit per each channel
+    // and totally thread for one block is limited 1024
+    const dim3 threads(threads_S, threads_H, threads_B);
+    const dim3 blocks((St + threads_S - 1)/ threads_S, 
+                   (H*D2 + threads_H - 1) / threads_H,
+                      (B + threads_B - 1) / threads_B);
+
+    auto o = v.clone();
+
+    
+    AT_DISPATCH_FLOATING_TYPES(q.scalar_type(), "qkvg_kernel2", ([&] {
+        qkvg_kernel2<scalar_t><<<blocks, threads>>>(
+            o.packed_accessor32<scalar_t, 4>(),
+            q.packed_accessor32<scalar_t, 4>(),
+            k.packed_accessor32<scalar_t, 4>(),
+            v.packed_accessor32<scalar_t, 4>(),
+            g.packed_accessor32<scalar_t, 3>()
+        );
+    }));
+    
+
+    return o;
+}
+
 torch::Tensor qkvg_retention_cuda(torch::Tensor q, 
                                   torch::Tensor k,
                                   torch::Tensor v,
                                   torch::Tensor g) {
-    return qkvg_retention(q,k,v,g);
+    return qkvg_retention2(q,k,v,g);
 }
